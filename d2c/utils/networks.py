@@ -1,4 +1,5 @@
 """Neural networks for RL models."""
+import math
 
 import torch
 import numpy as np
@@ -495,3 +496,207 @@ class ValueNetwork(nn.Module):
         inputs = torch.as_tensor(inputs, device=self._device, dtype=torch.float32)
         h = self._model(inputs)
         return torch.reshape(h, [-1])
+
+
+class SinusoidalPosEmb(nn.Module):
+    """Sinusoidal positional embedding for time steps."""
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        device = x.device
+        half_dim = self.dim // 2
+        emb = math.log(10000) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = x[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
+        return emb
+
+
+class MLPResNetBlock(nn.Module):
+    """
+    MLP ResNet Block with Layer Normalization and Dropout.
+    Architecture based on IDQL Paper Appendix G[cite: 533, 534].
+    Structure: Input -> Dropout -> LayerNorm -> Dense(4*h) -> Act -> Dense(h) -> Add
+    """
+
+    def __init__(self, hidden_dim: int, dropout_rate: float = 0.1):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.ln = nn.LayerNorm(hidden_dim)
+        self.fc1 = nn.Linear(hidden_dim, hidden_dim * 4)
+        self.activation = nn.Mish()  # Mish usually performs better in diffusion, or use ReLU
+        self.fc2 = nn.Linear(hidden_dim * 4, hidden_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = self.dropout(x)
+        out = self.ln(out)
+        out = self.fc1(out)
+        out = self.activation(out)
+        out = self.fc2(out)
+        return residual + out
+
+
+class DiffusionActor(nn.Module):
+    """
+    Diffusion-based Actor Network for IDQL.
+    Models the behavior policy mu(a|s) using a DDPM.
+
+    :param observation_space: gym.spaces.Box
+    :param action_space: gym.spaces.Box
+    :param hidden_dim: Hidden dimension size for the MLP
+    :param num_res_blocks: Number of residual blocks (IDQL uses 3) [cite: 533]
+    :param time_steps: Number of diffusion steps T (IDQL uses small T, e.g., 5) [cite: 501]
+    :param dropout_rate: Dropout rate (IDQL uses 0.1) [cite: 480]
+    """
+
+    def __init__(
+            self,
+            observation_space: Union[Box, Space],
+            action_space: Union[Box, Space],
+            hidden_dim: int = 256,
+            num_res_blocks: int = 3,
+            time_steps: int = 5,
+            dropout_rate: float = 0.1,
+            device: Union[str, int, torch.device] = 'cpu',
+    ):
+        super().__init__()
+        self._device = device
+        self._action_space = action_space
+        self.state_dim = observation_space.shape[0]
+        self.action_dim = action_space.shape[0]
+        self.T = time_steps
+
+        # --- 1. Define Diffusion Noise Schedule (Variance Preserving / Beta Schedule) ---
+        # Using a linear schedule for simplicity, IDQL often uses VP schedule.
+        self.register_buffer('betas', torch.linspace(1e-4, 0.02, self.T).to(device))
+        self.register_buffer('alphas', 1. - self.betas)
+        self.register_buffer('alpha_bars', torch.cumprod(self.alphas, dim=0))
+
+        # --- 2. Define Network Architecture (LN_Resnet) ---
+        # Input projection: State + Action + Time Embedding -> Hidden
+        self.time_mlp = nn.Sequential(
+            SinusoidalPosEmb(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Mish(),
+        )
+
+        self.input_proj = nn.Linear(self.state_dim + self.action_dim + hidden_dim, hidden_dim)
+
+        self.res_blocks = nn.ModuleList([
+            MLPResNetBlock(hidden_dim, dropout_rate) for _ in range(num_res_blocks)
+        ])
+
+        self.output_proj = nn.Linear(hidden_dim, self.action_dim)
+
+        self._action_means, self._action_mags = get_spec_means_mags(
+            self._action_space, self._device
+        )
+
+        self.to(device)
+
+    def forward(self, state: torch.Tensor, action: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Predicts noise epsilon given state, noisy action, and time step.
+        """
+        # Embed time
+        t_emb = self.time_mlp(t)  # [Batch, Hidden]
+
+        # Concatenate inputs
+        x = torch.cat([state, action, t_emb], dim=-1)
+        x = self.input_proj(x)
+
+        # Pass through residual blocks
+        for block in self.res_blocks:
+            x = block(x)
+
+        return self.output_proj(x)
+
+    def get_diffusion_loss(self, state: Union[np.ndarray, torch.Tensor],
+                           action: Union[np.ndarray, torch.Tensor]) -> torch.Tensor:
+        """
+        Computes the MSE loss between added noise and predicted noise.
+        Used for training the behavior policy.
+        """
+        state = torch.as_tensor(state, dtype=torch.float32, device=self._device)
+        action = torch.as_tensor(action, dtype=torch.float32, device=self._device)
+
+        # Normalize action to [-1, 1] for diffusion process
+        # action = (action - self._action_means) / self._action_mags
+
+        batch_size = state.shape[0]
+
+        # 1. Sample random time steps t ~ Uniform(0, T-1)
+        t = torch.randint(0, self.T, (batch_size,), device=self._device).long()
+
+        # 2. Sample random noise epsilon
+        noise = torch.randn_like(action, device=self._device)
+
+        # 3. Compute noisy action x_t (Forward Diffusion)
+        # x_t = sqrt(alpha_bar) * x_0 + sqrt(1 - alpha_bar) * epsilon
+        alpha_bar_t = self.alpha_bars[t].view(-1, 1)
+        noisy_action = torch.sqrt(alpha_bar_t) * action + torch.sqrt(1 - alpha_bar_t) * noise
+
+        # 4. Predict noise using the network
+        predicted_noise = self(state, noisy_action, t)
+
+        # 5. Compute MSE Loss
+        loss = F.mse_loss(predicted_noise, noise)
+        return loss
+
+    @torch.no_grad()
+    def sample_n(self, state: Union[np.ndarray, torch.Tensor], n: int = 1) -> torch.Tensor:
+        """
+        Samples N actions per state using the reverse diffusion process.
+        Used during IDQL inference to generate candidates for Argmax.
+        """
+        state = torch.as_tensor(state, dtype=torch.float32, device=self._device)
+        batch_size = state.shape[0]
+
+        # Repeat state N times: [B, D] -> [B*N, D]
+        # We process (Batch * N) samples in parallel
+        state_rep = torch.repeat_interleave(state, n, dim=0)
+
+        # Start from pure Gaussian noise: x_T ~ N(0, I)
+        x = torch.randn((batch_size * n, self.action_dim), device=self._device)
+
+        # Reverse Diffusion Process: T-1 -> 0
+        for i in reversed(range(self.T)):
+            t = torch.full((batch_size * n,), i, device=self._device, dtype=torch.long)
+
+            # Predict noise
+            predicted_noise = self(state_rep, x, t)
+
+            # Compute alpha, beta, alpha_bar for step t
+            alpha = self.alphas[i]
+            alpha_bar = self.alpha_bars[i]
+            beta = self.betas[i]
+
+            # Additional noise z (only if t > 0)
+            if i > 0:
+                z = torch.randn_like(x)
+            else:
+                z = torch.zeros_like(x)
+
+            # Update x_{t-1} = 1/sqrt(alpha) * (x_t - (1-alpha)/sqrt(1-alpha_bar) * eps) + sigma * z
+            noise_factor = (1 - alpha) / torch.sqrt(1 - alpha_bar)
+            mean = (1 / torch.sqrt(alpha)) * (x - noise_factor * predicted_noise)
+            sigma = torch.sqrt(beta)  # Simple sigma choice
+
+            x = mean + sigma * z
+
+        # Un-normalize actions back to environment space
+        # x is currently in [-1, 1] approx (depending on scheduler)
+        # Clip to ensure valid range before scaling
+        x = x.clamp(-1, 1)
+        # x = x * self._action_mags + self._action_means
+
+        # Reshape back to [Batch, N, Action_Dim] for easier downstream processing
+        return x.view(batch_size, n, self.action_dim)
+
+    @property
+    def action_space(self) -> Box:
+        return self._action_space

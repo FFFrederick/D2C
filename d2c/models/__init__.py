@@ -9,6 +9,7 @@ from d2c.models.model_free.h2o import H2OAgent
 from d2c.models.imitation.dmil import DMILAgent
 from d2c.models.imitation.bc import BCAgent
 from d2c.models.model_free.iql import IQLAgent
+from d2c.models.model_free.idql import IDQLAgent
 
 
 AGENT_MODULES_DICT = {
@@ -18,6 +19,7 @@ AGENT_MODULES_DICT = {
     'dmil': DMILAgent,
     'bc': BCAgent,
     'iql': IQLAgent,
+    'idql': IDQLAgent,
 }
 
 
