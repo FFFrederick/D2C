@@ -149,6 +149,11 @@ class Data(BaseData):
     def state_shift_scale(self) -> Tuple[np.ndarray, np.ndarray]:
         return self._data_loader.state_shift_scale
 
+    @property
+    def data_loader(self) -> BaseDataLoader:
+        """Return the data loader."""
+        return self._data_loader
+
 
 class DataNoise(Data):
     """Construct a dataset that with noised action.

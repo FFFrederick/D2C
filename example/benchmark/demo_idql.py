@@ -25,24 +25,25 @@ logging.basicConfig(level=logging.INFO)
 
 
 def main():
-    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    device = 'cuda:3' if torch.cuda.is_available() else 'cpu'
     prefix = 'env.external.'
     command_args = {
         prefix + 'benchmark_name': 'd4rl',
         prefix + 'data_source': 'mujoco',
         prefix + 'env_name': 'HalfCheetah-v2',
-        prefix + 'data_name': 'halfcheetah_medium_expert-v2',
+        prefix + 'data_name': 'halfcheetah_medium_replay-v2',
         prefix + 'state_normalize': True,
         prefix + 'score_normalize': True,
+        # prefix + 'reward_normalize': True,
     }
     command_args.update({
         'model.model_name': 'idql',
         'train.data_loader_name': None,
         'train.device': device,
         'train.seed': 1,
-        'train.total_train_steps': 1000000,
-        'train.batch_size': 256,
-        'train.agent_ckpt_name': '0810'
+        'train.total_train_steps': 3000000,
+        'train.batch_size': 512,
+        'train.agent_ckpt_name': '0811'
     })
 
     config = make_config(command_args)
@@ -54,7 +55,7 @@ def main():
     # Contains dynamics model to be trained.
     lea_env = LeaEnv(config)
     agent = make_agent(config=config, env=lea_env, data=data)
-    evaluator = bm_eval(agent=agent, env=env, config=config)
+    evaluator = bm_eval(agent=agent, env=env, config=config, data_loader=bm_data.data_loader)
     trainer = Trainer(agent=agent, train_data=data, config=config, env=lea_env, evaluator=evaluator)
     trainer.train()
 

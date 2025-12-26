@@ -183,11 +183,15 @@ class D4rlDataLoader(BaseBMLoader):
             self,
             file_path: str,
             state_normalize: bool = False,
-            reward_normalize: bool = False) -> None:
+            reward_normalize: bool = False,
+            normalize_returns: bool = False,
+            scaling: float = 1000.0) -> None:
         super(D4rlDataLoader, self).__init__(
             file_path,
             state_normalize,
             reward_normalize)
+        self._normalize_returns = normalize_returns
+        self._scaling = scaling
 
     def _load_data(self):
         dataset_file = h5py.File(self._file_path + '.hdf5', 'r')
@@ -218,3 +222,79 @@ class D4rlDataLoader(BaseBMLoader):
         demo_c = np.zeros(shape=demo_r.shape)
 
         return demo_s1, demo_a1, demo_s2, demo_a2, demo_r, demo_c, demo_d
+        # offline_dataset['terminals'] = np.squeeze(offline_dataset['terminals'])
+        # offline_dataset['rewards'] = np.squeeze(offline_dataset['rewards'])
+        #
+        # return offline_dataset
+
+    # def get_transitions(self, split_ratio: float = None, split_shuffle: bool = True) -> OrderedDict:
+    #     offline_dataset = self._load_data()
+    #
+    #     # 1. 👈 适配 JAX 风格的 normalize_returns
+    #     if self._normalize_returns:
+    #         offline_dataset['rewards'] = self.jax_style_normalize_returns(
+    #             rewards=offline_dataset['rewards'],
+    #             observations=offline_dataset['observations'],
+    #             next_observations=offline_dataset['next_observations'],
+    #             terminals=offline_dataset['terminals'],
+    #             scaling=self._scaling
+    #         )
+    #
+    #     # 2. 构造 transitions (原有逻辑)
+    #     dataset_size = len(offline_dataset['observations'])
+    #     nonterminal_steps, = np.where(
+    #         np.logical_and(
+    #             np.logical_not(offline_dataset['terminals']),
+    #             np.arange(dataset_size) < dataset_size - 1))
+    #
+    #     demo_s1 = offline_dataset['observations'][nonterminal_steps]
+    #     demo_s2 = offline_dataset['observations'][nonterminal_steps + 1]
+    #     demo_a1 = offline_dataset['actions'][nonterminal_steps]
+    #     demo_a2 = offline_dataset['actions'][nonterminal_steps + 1]
+    #     demo_r = offline_dataset['rewards'][nonterminal_steps]
+    #     demo_d = offline_dataset['terminals'][nonterminal_steps + 1]
+    #     demo_c = np.zeros(shape=demo_r.shape)
+    #
+    #     # 3. 拆分数据集
+    #     if split_ratio is not None:
+    #         demo_s1, demo_a1, demo_s2, demo_a2, demo_r, demo_c, demo_d = self._split(
+    #             split_ratio, split_shuffle, demo_s1, demo_a1, demo_s2, demo_a2, demo_r, demo_c, demo_d
+    #         )
+    #
+    #     # 4. 状态归一化
+    #     if self._state_normalize:
+    #         demo_s1, demo_s2, self._obs_shift, self._obs_scale = self.norm_state(demo_s1, demo_s2)
+    #
+    #     return OrderedDict(s1=demo_s1, a1=demo_a1, s2=demo_s2, a2=demo_a2, reward=demo_r, cost=demo_c, done=demo_d)
+
+    @staticmethod
+    def jax_style_normalize_returns(rewards: np.ndarray, observations: np.ndarray, next_observations: np.ndarray, terminals: np.ndarray, scaling: float = 10.0) -> np.ndarray:
+        # 1. 仿照 JAX 重新计算轨迹结束标识
+        dones = np.zeros_like(terminals, dtype=bool)
+        for i in range(len(dones) - 1):
+            # 物理上的状态跳变 或 逻辑上的终止
+            diff = np.linalg.norm(observations[i + 1] - next_observations[i])
+            if diff > 1e-6 or terminals[i] == 1.0:
+                dones[i] = True
+        dones[-1] = True # 强制最后一步结束
+
+        # 2. 计算每条轨迹的 Return
+        episode_return = 0.0
+        episode_returns = []
+        for i in range(len(rewards)):
+            episode_return += rewards[i]
+            if dones[i]:
+                episode_returns.append(episode_return)
+                episode_return = 0.0
+
+        # 3. 计算 Range
+        episode_returns = np.array(episode_returns)
+        ret_max, ret_min = np.max(episode_returns), np.min(episode_returns)
+        return_range = ret_max - ret_min
+
+        # 安全保护
+        if return_range < 1e-6:
+            return_range = 1.0
+
+        logging.info(f"Fixed Logic: Found {len(episode_returns)} episodes, range {return_range}")
+        return (rewards / return_range) * scaling

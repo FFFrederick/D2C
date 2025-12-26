@@ -1,5 +1,17 @@
 import sys
-sys.path.append('../../')
+# sys.path.append('../../')
+from pathlib import Path
+
+# 获取当前脚本的绝对路径
+current_file_path = Path(__file__).resolve()
+
+# 假设项目根目录D2C在脚本目录(benchmark)的父目录的父目录
+# current_file_path.parent 是 benchmark 目录
+# current_file_path.parent.parent 是 example 目录
+# current_file_path.parent.parent.parent 是 D2C 根目录
+ROOT_DIR = current_file_path.parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 import torch
 import logging
 from d2c.trainers import Trainer
@@ -13,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 def main():
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cuda:7' if torch.cuda.is_available() else 'cpu'
     prefix = 'env.external.'
     command_args = {
         prefix + 'benchmark_name': 'd4rl',

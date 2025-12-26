@@ -4,6 +4,7 @@ import logging
 import os
 import collections
 import numpy as np
+from Cython.Distutils.old_build_ext import old_build_ext
 from torch import nn
 from torch.utils.tensorboard import SummaryWriter
 from typing import Dict, Tuple, List
@@ -12,6 +13,7 @@ from d2c.utils import utils
 from d2c.utils.logger import write_summary_tensorboard
 from d2c.models import BaseAgent
 from d2c.envs import BaseEnv
+from d2c.utils.dataloader import BaseBMLoader
 
 
 class BMEval(BaseEval):
@@ -36,6 +38,7 @@ class BMEval(BaseEval):
             result_dir: str,
             agent: BaseAgent,
             env: BaseEnv,
+            data_loader: BaseBMLoader,
             n_eval_episodes: int = 20,
             score_normalize: bool = False,
             score_norm_min: float = None,
@@ -45,6 +48,7 @@ class BMEval(BaseEval):
         self._agent = agent
         self._env = env
         self._env.reset(seed=seed)
+        self.data_loader = data_loader
         self._n_episodes = n_eval_episodes
         self._score_norm = score_normalize
         self._score_norm_min = score_norm_min
@@ -57,13 +61,17 @@ class BMEval(BaseEval):
 
     def _eval_policy_episodes(self, policy: nn.Module) -> Tuple[float, float, np.ndarray]:
         results = []
+        shift = self.data_loader._obs_shift
+        scale = self.data_loader._obs_scale
         for i in range(self._n_episodes):
             observation = self._env.reset()
             done = None
             total_rewards = 0.0
             while not done:
+                observation = (observation + shift) * scale
                 action = policy(observation)
                 observation, reward, done, _ = self._env.step(action)
+                # print(reward)
                 total_rewards += reward
             results.append(total_rewards)
         logging.info('='*20+f' Complete evaluation of {self._n_episodes} episodes! '+'='*20)

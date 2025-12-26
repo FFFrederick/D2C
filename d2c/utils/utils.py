@@ -21,13 +21,21 @@ def get_summary_str(step: int = None, info: Dict = None, prefix: str = '') -> st
     return summary_str
 
 
-def get_optimizer(name: str) -> Callable:
-    """Get an optimizer generator that returns an optimizer according to lr."""
-    if name == 'adam':
-        def adam_opt_(parameters, lr, weight_decay=0.0):
-            return torch.optim.Adam(params=parameters, lr=lr, weight_decay=weight_decay)
+# def get_optimizer(name: str) -> Callable:
+#     """Get an optimizer generator that returns an optimizer according to lr."""
+#     if name == 'adam':
+#         def adam_opt_(parameters, lr, weight_decay=0.0):
+#             return torch.optim.Adam(params=parameters, lr=lr, weight_decay=weight_decay)
+#
+#         return adam_opt_
+#     else:
+#         raise ValueError('Unknown optimizer %s.' % name)
 
-        return adam_opt_
+def get_optimizer(name: str):
+    if name == 'adam':
+        return torch.optim.Adam
+    elif name == 'adamw':
+        return torch.optim.AdamW
     else:
         raise ValueError('Unknown optimizer %s.' % name)
 

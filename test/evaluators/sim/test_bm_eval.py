@@ -18,11 +18,11 @@ class TestBMEval:
     command_args = {
         prefix + 'benchmark_name': 'd4rl',
         prefix + 'data_source': 'mujoco',
-        prefix + 'env_name': 'Hopper-v2',
-        prefix + 'data_name': 'hopper_random-v2',
+        prefix + 'env_name': 'HalfCheetah-v2',
+        prefix + 'data_name': 'halfcheetah_medium_expert-v2',
     }
     command_args.update({
-        'model.model_name': 'td3_bc',
+        'model.model_name': 'idql',
         'train.data_loader_name': None,
         'train.device': device,
         'train.seed': 1,

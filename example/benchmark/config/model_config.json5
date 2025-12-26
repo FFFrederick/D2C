@@ -58,7 +58,7 @@
       train_schedule: ['agent'],
       hyper_params: {
         model_params: {v: [[256, 256],], q: [[256, 256], 2], p: [[256, 256],]},
-        optimizers: {v: ['adam', 3e-4], q: ['adam', 3e-4], p: ['adam', 3e-4]}
+        optimizers: {v: ['adam', 3e-4], q: ['adam', 3e-4], p: ['adam', 3e-4]},
       }
     }
   },
@@ -96,7 +96,7 @@
     model_buffer_size: null,  // The capacity of the empty buffer.
     weight_decays: 0.0,
     update_freq: 1,
-    update_rate: 0.005,
+    update_rate: 0.001,
     discount: 0.99,
     total_train_steps: 10000,
     summary_freq: 100,
